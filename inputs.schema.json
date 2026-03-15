@@ -272,7 +272,7 @@
         "enabled": { "type": "boolean", "const": true },
         "engine": { "type": "string", "const": "bullmq" },
         "backend": { "type": "string", "const": "valkey" },
-        "total_queues": { "type": "integer", "const": 17 },
+        "total_queues": { "type": "integer", "const": 18 },
         "queues": {
           "type": "array",
           "minItems": 17,
