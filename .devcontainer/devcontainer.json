@@ -1,5 +1,5 @@
 {
-  "name": "{{APP_NAME}}",
+  "name": "nucleus-business-suite",
   "build": {
     "dockerfile": "Dockerfile",
     "context": ".."
