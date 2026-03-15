@@ -1,0 +1,48 @@
+{
+  "expo": {
+    "name": "Nucleus Business Suite",
+    "slug": "nucleus-business-suite",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "nucleus",
+    "userInterfaceStyle": "automatic",
+    "platforms": ["ios", "android"],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "app.powerbyte.nucleus",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Used for DTR clock-in/out location recording.",
+        "NSCameraUsageDescription": "Used for expense receipt photo capture.",
+        "NSFaceIDUsageDescription": "Used for biometric app unlock."
+      }
+    },
+    "android": {
+      "package": "app.powerbyte.nucleus",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "CAMERA",
+        "USE_BIOMETRIC",
+        "USE_FINGERPRINT"
+      ]
+    },
+    "notification": {
+      "iosDisplayInForeground": true
+    },
+    "plugins": [
+      "expo-router",
+      "expo-location",
+      "expo-camera",
+      "expo-local-authentication",
+      [
+        "expo-notifications",
+        {
+          "sounds": []
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
