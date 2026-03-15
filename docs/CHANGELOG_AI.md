@@ -15,6 +15,27 @@
 
 ---
 
+## 2026-03-15 — Phase 4 Completeness Audit + Gap Fixes
+- Agent:               CLINE
+- Why:                 Thorough audit of Phase 4 deliverables vs inputs.yml spec — found 4 missing items
+- Files added:
+    apps/web/postcss.config.mjs (required for Tailwind CSS — Next.js won't process CSS without it),
+    apps/web/Dockerfile (multi-stage prod build: deps→builder→runner),
+    apps/worker/Dockerfile (multi-stage prod build: deps→builder→runner),
+    apps/mobile/package.json (Expo ~52 + expo-router + NativeWind + WatermelonDB deps),
+    apps/mobile/tsconfig.json (standalone — module:ESNext, moduleResolution:bundler, jsx:react-native),
+    apps/mobile/app.json (Expo config — iOS + Android, scheme:nucleus, GPS/Camera/Biometrics permissions),
+    apps/mobile/app/_layout.tsx (Expo Router root Stack layout),
+    apps/mobile/app/index.tsx (home screen),
+    apps/mobile/src/index.ts (entry point comment block)
+- Files modified:      docs/CHANGELOG_AI.md, docs/IMPLEMENTATION_MAP.md
+- Files deleted:       none
+- Schema/migrations:   none
+- Errors encountered:  none — all 4 gaps were straightforward additions
+- Errors resolved:     n/a
+
+---
+
 ## 2026-03-15 — Phase 4+5: Full Monorepo Scaffold + Validation
 - Agent:               CLINE
 - Why:                 Phase 4 — scaffold all 8 parts of the monorepo from inputs.yml; Phase 5 — validate all checks green
