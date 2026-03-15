@@ -1,0 +1,45 @@
+version: "3.9"
+
+networks:
+  nucleus-net:
+    external: true
+    name: nucleus-net
+
+services:
+  web:
+    build:
+      context: ../..
+      dockerfile: apps/web/Dockerfile
+    container_name: nucleus-web
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL}
+      NEXTAUTH_URL: ${NEXTAUTH_URL}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
+      REDIS_HOST: nucleus-redis
+      REDIS_PORT: 6379
+      STORAGE_ENDPOINT: http://nucleus-minio:9000
+      STORAGE_BUCKET: nucleus
+    depends_on:
+      - worker
+    networks:
+      - nucleus-net
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: apps/worker/Dockerfile
+    container_name: nucleus-worker
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_HOST: nucleus-redis
+      REDIS_PORT: 6379
+      STORAGE_ENDPOINT: http://nucleus-minio:9000
+      STORAGE_BUCKET: nucleus
+    networks:
+      - nucleus-net

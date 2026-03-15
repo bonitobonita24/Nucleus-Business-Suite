@@ -272,7 +272,7 @@ database:
 
   global_entities:
     - Tenant          # id, tenantName(slug), companyName, ownerEmail, ownerName, planId, status, trialEndsAt, schemaName, createdAt
-    - Plan            # id, name[Starter|Growth|Pro|Enterprise], monthlyPrice, annualPrice, features[], maxUsers, maxStorageGB, isActive, createdAt
+    - Plan            # id, name[Starter|Growth|Pro|Enterprise], monthlyPrice, annualPrice, "features[]", maxUsers, maxStorageGB, isActive, createdAt
     - TenantSubscription  # id, tenantId, planId, billingCycle, currentPeriodStart, currentPeriodEnd, status
     - TenantInvoice   # id, tenantId, subscriptionId, amount, status, dueDate, paidAt, generatedAt
     - TenantPayment   # id, tenantInvoiceId, amount, method, referenceNo, paidAt, recordedBy
@@ -284,7 +284,7 @@ database:
         fields: [id, name, email, password, role, departmentId, isEmployee, isActive, createdAt]
         note: "role is single string enum; isEmployee gates Employee record + mobile access"
       - name: Role
-        fields: [id, name, permissions[]]
+        fields: [id, name, "permissions[]"]
         note: "read-only reference table; seeded at migration; not editable by tenants"
       - name: Department
         fields: [id, name]
@@ -306,11 +306,11 @@ database:
           referenceType: [invoice, payment, manual_refund]
         note: "immutable ledger — never updated or deleted after creation"
       - name: Proposal
-        fields: [id, customerId, lineItems[], terms, status, createdAt]
+        fields: [id, customerId, "lineItems[]", terms, status, createdAt]
         enums:
           status: [draft, sent, revised, accepted, declined]
       - name: Invoice
-        fields: [id, customerId, proposalId, projectId, subscriptionId, lineItems[], subtotal, tax, total, amountPaid, creditApplied, balance, status, fundSourceId, dueDate, createdAt]
+        fields: [id, customerId, proposalId, projectId, subscriptionId, "lineItems[]", subtotal, tax, total, amountPaid, creditApplied, balance, status, fundSourceId, dueDate, createdAt]
         computed:
           balance: "total - amountPaid - creditApplied"
         enums:
@@ -344,7 +344,7 @@ database:
         enums:
           platform: [shopee, lazada, zalora, fb_marketplace, other]
       - name: PurchaseOrder
-        fields: [id, vendorId, lineItems[], subtotal, status, fundSourceId, expectedDate, approvedBy, approvedAt, createdAt]
+        fields: [id, vendorId, "lineItems[]", subtotal, status, fundSourceId, expectedDate, approvedBy, approvedAt, createdAt]
         enums:
           status: [draft, sent, confirmed, partially_received, received, cancelled]
       - name: PurchaseOrderItem
@@ -353,7 +353,7 @@ database:
       - name: ShippingCost
         fields: [id, purchaseOrderId, logisticsProvider, amount, receiptPhotoUrl, notes, addedBy, createdAt]
       - name: GoodsReceipt
-        fields: [id, purchaseOrderId, receivedBy, receivedAt, notes, photos[]]
+        fields: [id, purchaseOrderId, receivedBy, receivedAt, notes, "photos[]"]
       - name: GoodsReceiptItem
         fields: [id, goodsReceiptId, purchaseOrderItemId, productId, quantityReceived]
       - name: PurchaseInvoice
@@ -460,7 +460,7 @@ database:
         enums:
           status: [draft, approved, released]
       - name: Payslip
-        fields: [id, payrollId, employeeId, basicPay, deductions[], additions[], cashAdvanceDeductions[], netPay, fundSourceId]
+        fields: [id, payrollId, employeeId, basicPay, "deductions[]", "additions[]", "cashAdvanceDeductions[]", netPay, fundSourceId]
 
     pos:
       - name: POSSession
@@ -468,7 +468,7 @@ database:
         enums:
           status: [open, closed]
       - name: POSSale
-        fields: [id, sessionId, customerId, lineItems[], subtotal, discount, tax, total, paymentMethod, fundSourceId, receiptNo, createdAt]
+        fields: [id, sessionId, customerId, "lineItems[]", subtotal, discount, tax, total, paymentMethod, fundSourceId, receiptNo, createdAt]
       - name: POSSaleItem
         fields: [id, saleId, productId, quantity, unitPrice, lineTotal]
 
@@ -478,7 +478,7 @@ database:
         enums:
           type: [asset, liability, equity, income, expense]
       - name: JournalEntry
-        fields: [id, referenceType, referenceId, date, lines[], description, createdBy]
+        fields: [id, referenceType, referenceId, date, "lines[]", description, createdBy]
       - name: JournalLine
         fields: [id, journalEntryId, accountId, debit, credit]
       - name: TaxRate
@@ -512,7 +512,7 @@ jobs:
   enabled: true
   engine: bullmq
   backend: valkey
-  total_queues: 17
+  total_queues: 18
   worker_placement: "packages/jobs (definitions + typed payloads); apps/worker (runtime process)"
   default_retry: 3
   dlq_required: true

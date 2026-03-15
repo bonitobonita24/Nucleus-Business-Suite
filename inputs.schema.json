@@ -276,7 +276,7 @@
         "queues": {
           "type": "array",
           "minItems": 17,
-          "maxItems": 17,
+          "maxItems": 18,
           "items": {
             "type": "object",
             "required": ["name", "trigger", "description"],

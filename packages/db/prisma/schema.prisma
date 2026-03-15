@@ -1,0 +1,1492 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Nucleus Business Suite — Prisma Schema
+//
+// ARCHITECTURE (D004 — LOCKED):
+//   • Global entities live in the `public` PostgreSQL schema
+//   • Tenant entities live in `t_<slug_underscored>` schemas
+//   • search_path is set atomically per request/job via withTenantSchema()
+//   • NO tenantId columns on tenant entities — schema IS the isolation boundary
+//
+// TWO-SCHEMA STRATEGY (multiSchema preview):
+//   • @@schema("public")  → global entities (platform-level)
+//   • @@schema("tenant")  → tenant ERP entities (search_path-switched at runtime)
+//
+// MIGRATION STRATEGY:
+//   • Global migration: prisma migrate deploy (runs against public schema once)
+//   • Tenant migration: run by tenant-provisioning job for each t_<slug> schema
+//     via: SET search_path TO t_<slug>, public; then run SQL from migration file
+// ─────────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["multiSchema"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  schemas  = ["public", "tenant"]
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GLOBAL SCHEMA (public) — Platform-Level Only
+// Accessed by platform_owner and automated billing/provisioning jobs only.
+// Tenant users have ZERO visibility into this schema.
+// ═════════════════════════════════════════════════════════════════════════════
+
+model GlobalTenant {
+  id          String               @id @default(cuid())
+  tenantName  String               @unique // slug: lowercase alphanumeric + hyphens, 3–30 chars
+  companyName String
+  ownerEmail  String
+  ownerName   String
+  planId      String
+  plan        GlobalPlan           @relation(fields: [planId], references: [id])
+  status      GlobalTenantStatus   @default(trial)
+  trialEndsAt DateTime?
+  schemaName  String               @unique // t_<slug_underscored>
+  createdAt   DateTime             @default(now())
+
+  subscriptions  GlobalTenantSubscription[]
+  invoices       GlobalTenantInvoice[]
+  auditLogs      GlobalTenantAuditLog[]
+
+  @@map("tenants")
+  @@schema("public")
+}
+
+enum GlobalTenantStatus {
+  trial
+  active
+  suspended
+  cancelled
+
+  @@schema("public")
+}
+
+model GlobalPlan {
+  id           String         @id @default(cuid())
+  name         GlobalPlanName @unique
+  monthlyPrice Decimal        @db.Decimal(10, 2)
+  annualPrice  Decimal      @db.Decimal(10, 2)
+  features     String[]
+  maxUsers     Int
+  maxStorageGB Int
+  isActive     Boolean      @default(true)
+  createdAt    DateTime     @default(now())
+
+  tenants       GlobalTenant[]
+  subscriptions GlobalTenantSubscription[]
+
+  @@map("plans")
+  @@schema("public")
+}
+
+enum GlobalPlanName {
+  Starter
+  Growth
+  Pro
+  Enterprise
+
+  @@schema("public")
+}
+
+model GlobalTenantSubscription {
+  id                 String                   @id @default(cuid())
+  tenantId           String
+  tenant             GlobalTenant             @relation(fields: [tenantId], references: [id])
+  planId             String
+  plan               GlobalPlan               @relation(fields: [planId], references: [id])
+  billingCycle       GlobalBillingCycle
+  currentPeriodStart DateTime
+  currentPeriodEnd   DateTime
+  status             GlobalSubscriptionStatus @default(active)
+
+  invoices GlobalTenantInvoice[]
+
+  @@map("tenant_subscriptions")
+  @@schema("public")
+}
+
+enum GlobalBillingCycle {
+  monthly
+  annual
+
+  @@schema("public")
+}
+
+enum GlobalSubscriptionStatus {
+  active
+  past_due
+  cancelled
+
+  @@schema("public")
+}
+
+model GlobalTenantInvoice {
+  id             String                   @id @default(cuid())
+  tenantId       String
+  tenant         GlobalTenant             @relation(fields: [tenantId], references: [id])
+  subscriptionId String
+  subscription   GlobalTenantSubscription @relation(fields: [subscriptionId], references: [id])
+  amount         Decimal                  @db.Decimal(10, 2)
+  status         GlobalInvoiceStatus      @default(draft)
+  dueDate        DateTime
+  paidAt         DateTime?
+  generatedAt    DateTime                 @default(now())
+
+  payments GlobalTenantPayment[]
+
+  @@map("tenant_invoices")
+  @@schema("public")
+}
+
+enum GlobalInvoiceStatus {
+  draft
+  sent
+  paid
+  past_due
+  cancelled
+
+  @@schema("public")
+}
+
+model GlobalTenantPayment {
+  id              String              @id @default(cuid())
+  tenantInvoiceId String
+  invoice         GlobalTenantInvoice @relation(fields: [tenantInvoiceId], references: [id])
+  amount          Decimal             @db.Decimal(10, 2)
+  method          String
+  referenceNo     String?
+  paidAt          DateTime
+  recordedBy      String
+
+  @@map("tenant_payments")
+  @@schema("public")
+}
+
+model GlobalTenantAuditLog {
+  id          String       @id @default(cuid())
+  tenantId    String
+  tenant      GlobalTenant @relation(fields: [tenantId], references: [id])
+  action      String
+  performedBy String
+  notes       String?
+  createdAt   DateTime     @default(now())
+
+  @@map("tenant_audit_logs")
+  @@schema("public")
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// TENANT SCHEMA — All ERP Data
+// Lives in t_<slug_underscored> schema.
+// search_path set via withTenantSchema() before every tenant operation.
+// NO tenantId columns — schema boundary IS the isolation layer (D004).
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ─── Auth / Users ─────────────────────────────────────────────────────────────
+
+model User {
+  id           String     @id @default(cuid())
+  name         String
+  email        String     @unique
+  password     String
+  role         TenantRole
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id])
+  isEmployee   Boolean    @default(false)
+  isActive     Boolean    @default(true)
+  createdAt    DateTime   @default(now())
+
+  employee         Employee?
+  auditLogs        AuditLog[]
+  tasks            Task[]            @relation("TaskAssignee")
+  assignedTasks    Task[]            @relation("TaskAssigner")
+  todos            ToDo[]
+  attendanceRecords AttendanceRecord[]
+  timeLogs         TimeLog[]
+  budgetAllocationsReceived BudgetAllocation[] @relation("BudgetAllocatedTo")
+  budgetAllocationsGiven    BudgetAllocation[] @relation("BudgetAllocatedBy")
+  posSessions      POSSession[]
+  ticketsAssigned  Ticket[]
+  managedProjects  Project[]     @relation("ProjectManager")
+
+  @@map("users")
+  @@schema("tenant")
+}
+
+enum TenantRole {
+  tenant_super_admin
+  admin
+  accountant
+  hr_manager
+  project_manager
+  budget_holder
+  sales_staff
+  purchasing_staff
+  inventory_staff
+  staff
+  cashier
+  support_agent
+  customer
+
+  @@schema("tenant")
+}
+
+model Role {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  permissions String[]
+
+  @@map("roles")
+  @@schema("tenant")
+}
+
+model Department {
+  id    String @id @default(cuid())
+  name  String @unique
+  users User[]
+
+  @@map("departments")
+  @@schema("tenant")
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  action    String
+  module    String
+  recordId  String
+  timestamp DateTime @default(now())
+
+  @@map("audit_logs")
+  @@schema("tenant")
+}
+
+// ─── CRM / Sales ─────────────────────────────────────────────────────────────
+
+model Customer {
+  id            String   @id @default(cuid())
+  companyName   String
+  contactPerson String
+  email         String
+  phone         String
+  address       String
+  type          CustomerType
+  creditLimit   Decimal?    @db.Decimal(15, 2) // null=unlimited, 0=no facility
+  creditBalance Decimal     @default(0) @db.Decimal(15, 2)
+  createdAt     DateTime    @default(now())
+
+  proposals          Proposal[]
+  invoices           Invoice[]
+  subscriptions      Subscription[]
+  creditAccount      CustomerCreditAccount?
+  creditTransactions CustomerCreditTransaction[]
+  projects           Project[]
+  tickets            Ticket[]
+  posSales           POSSale[]
+
+  @@map("customers")
+  @@schema("tenant")
+}
+
+enum CustomerType {
+  individual
+  business
+
+  @@schema("tenant")
+}
+
+model CustomerCreditAccount {
+  id             String   @id @default(cuid())
+  customerId     String   @unique
+  customer       Customer @relation(fields: [customerId], references: [id])
+  totalCredited  Decimal  @default(0) @db.Decimal(15, 2)
+  totalUsed      Decimal  @default(0) @db.Decimal(15, 2)
+  totalRefunded  Decimal  @default(0) @db.Decimal(15, 2)
+  currentBalance Decimal  @default(0) @db.Decimal(15, 2)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@map("customer_credit_accounts")
+  @@schema("tenant")
+}
+
+model CustomerCreditTransaction {
+  id            String              @id @default(cuid())
+  customerId    String
+  customer      Customer            @relation(fields: [customerId], references: [id])
+  type          CreditTransactionType
+  amount        Decimal             @db.Decimal(15, 2)
+  referenceType CreditReferenceType
+  referenceId   String
+  invoiceId     String?
+  invoice       Invoice?            @relation(fields: [invoiceId], references: [id])
+  notes         String?
+  performedBy   String
+  createdAt     DateTime            @default(now())
+
+  @@map("customer_credit_transactions")
+  @@schema("tenant")
+}
+
+enum CreditTransactionType {
+  advance_payment
+  excess_payment
+  credit_applied
+  credit_refunded
+
+  @@schema("tenant")
+}
+
+enum CreditReferenceType {
+  invoice
+  payment
+  manual_refund
+
+  @@schema("tenant")
+}
+
+model Proposal {
+  id         String         @id @default(cuid())
+  customerId String
+  customer   Customer       @relation(fields: [customerId], references: [id])
+  lineItems  Json           // LineItem[]
+  terms      String?
+  status     ProposalStatus @default(draft)
+  createdAt  DateTime       @default(now())
+
+  invoices Invoice[]
+
+  @@map("proposals")
+  @@schema("tenant")
+}
+
+enum ProposalStatus {
+  draft
+  sent
+  revised
+  accepted
+  declined
+
+  @@schema("tenant")
+}
+
+model Invoice {
+  id             String        @id @default(cuid())
+  customerId     String
+  customer       Customer      @relation(fields: [customerId], references: [id])
+  proposalId     String?
+  proposal       Proposal?     @relation(fields: [proposalId], references: [id])
+  projectId      String?
+  project        Project?      @relation(fields: [projectId], references: [id])
+  subscriptionId String?
+  subscription   Subscription? @relation(fields: [subscriptionId], references: [id])
+  lineItems      Json          // LineItem[]
+  subtotal       Decimal       @db.Decimal(15, 2)
+  tax            Decimal       @default(0) @db.Decimal(15, 2)
+  total          Decimal       @db.Decimal(15, 2)
+  amountPaid     Decimal       @default(0) @db.Decimal(15, 2)
+  creditApplied  Decimal       @default(0) @db.Decimal(15, 2)
+  balance        Decimal       @db.Decimal(15, 2) // total - amountPaid - creditApplied
+  status         InvoiceStatus @default(draft)
+  fundSourceId   String?
+  fundSource     FundSource?   @relation(fields: [fundSourceId], references: [id])
+  dueDate        DateTime
+  createdAt      DateTime      @default(now())
+
+  payments           Payment[]
+  creditTransactions CustomerCreditTransaction[]
+  journalEntries     JournalEntry[]
+
+  @@map("invoices")
+  @@schema("tenant")
+}
+
+enum InvoiceStatus {
+  draft
+  sent
+  unpaid
+  partially_paid
+  overdue
+  paid
+
+  @@schema("tenant")
+}
+
+model Payment {
+  id                  String         @id @default(cuid())
+  invoiceId           String
+  invoice             Invoice        @relation(fields: [invoiceId], references: [id])
+  amount              Decimal        @db.Decimal(15, 2)
+  method              PaymentMethod
+  fundSourceId        String
+  fundSource          FundSource     @relation(fields: [fundSourceId], references: [id])
+  referenceNo         String?
+  balanceAfterPayment Decimal        @db.Decimal(15, 2)
+  excessAmount        Decimal        @default(0) @db.Decimal(15, 2)
+  excessHandling      ExcessHandling @default(pending_decision)
+  notes               String?
+  recordedBy          String
+  paidAt              DateTime       @default(now())
+
+  @@map("payments")
+  @@schema("tenant")
+}
+
+enum PaymentMethod {
+  cash
+  card
+  bank
+  gcash
+  other
+
+  @@schema("tenant")
+}
+
+enum ExcessHandling {
+  credited_to_account
+  refunded
+  pending_decision
+
+  @@schema("tenant")
+}
+
+model Subscription {
+  id                  String                    @id @default(cuid())
+  customerId          String
+  customer            Customer                  @relation(fields: [customerId], references: [id])
+  planId              String
+  billingCycle        SubscriptionBillingCycle
+  nextBillingDate     DateTime
+  descriptionTemplate String
+  status              SubscriptionStatus        @default(active)
+
+  invoices Invoice[]
+
+  @@map("subscriptions")
+  @@schema("tenant")
+}
+
+enum SubscriptionBillingCycle {
+  monthly
+  quarterly
+  annual
+
+  @@schema("tenant")
+}
+
+enum SubscriptionStatus {
+  active
+  paused
+  cancelled
+
+  @@schema("tenant")
+}
+
+// ─── Purchasing ───────────────────────────────────────────────────────────────
+
+model Vendor {
+  id        String     @id @default(cuid())
+  type      VendorType
+  name      String
+  createdAt DateTime   @default(now())
+
+  directSupplier   DirectSupplier?
+  eCommerceSeller  ECommerceSeller?
+  purchaseOrders   PurchaseOrder[]
+  purchaseHistory  ProductPurchaseHistory[]
+
+  @@map("vendors")
+  @@schema("tenant")
+}
+
+enum VendorType {
+  direct_supplier
+  ecommerce_seller
+
+  @@schema("tenant")
+}
+
+model DirectSupplier {
+  id                  String  @id @default(cuid())
+  vendorId            String  @unique
+  vendor              Vendor  @relation(fields: [vendorId], references: [id])
+  companyOrPersonName String
+  contactPerson       String?
+  email               String?
+  phone               String?
+  address             String?
+
+  @@map("direct_suppliers")
+  @@schema("tenant")
+}
+
+model ECommerceSeller {
+  id         String            @id @default(cuid())
+  vendorId   String            @unique
+  vendor     Vendor            @relation(fields: [vendorId], references: [id])
+  platform   EcommercePlatform
+  sellerName String
+  profileUrl String?
+  createdAt  DateTime          @default(now())
+
+  @@map("ecommerce_sellers")
+  @@schema("tenant")
+}
+
+enum EcommercePlatform {
+  shopee
+  lazada
+  zalora
+  fb_marketplace
+  other
+
+  @@schema("tenant")
+}
+
+model PurchaseOrder {
+  id           String              @id @default(cuid())
+  vendorId     String
+  vendor       Vendor              @relation(fields: [vendorId], references: [id])
+  subtotal     Decimal             @db.Decimal(15, 2)
+  status       PurchaseOrderStatus @default(draft)
+  fundSourceId String
+  fundSource   FundSource          @relation(fields: [fundSourceId], references: [id])
+  expectedDate DateTime?
+  approvedBy   String?
+  approvedAt   DateTime?
+  createdAt    DateTime            @default(now())
+
+  items            PurchaseOrderItem[]
+  shippingCosts    ShippingCost[]
+  goodsReceipts    GoodsReceipt[]
+  purchaseInvoices PurchaseInvoice[]
+
+  @@map("purchase_orders")
+  @@schema("tenant")
+}
+
+enum PurchaseOrderStatus {
+  draft
+  sent
+  confirmed
+  partially_received
+  received
+  cancelled
+
+  @@schema("tenant")
+}
+
+model PurchaseOrderItem {
+  id              String        @id @default(cuid())
+  purchaseOrderId String
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id])
+  productId       String?
+  product         Product?      @relation(fields: [productId], references: [id])
+  productName     String
+  quantity        Decimal       @db.Decimal(10, 3)
+  unitCost        Decimal       @db.Decimal(15, 2)
+  lineTotal       Decimal       @db.Decimal(15, 2)
+  landedUnitCost  Decimal       @default(0) @db.Decimal(15, 2)
+
+  goodsReceiptItems GoodsReceiptItem[]
+
+  @@map("purchase_order_items")
+  @@schema("tenant")
+}
+
+model ShippingCost {
+  id              String        @id @default(cuid())
+  purchaseOrderId String
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id])
+  logisticsProvider String
+  amount          Decimal?      @db.Decimal(15, 2)
+  receiptPhotoUrl String?
+  notes           String?
+  addedBy         String
+  createdAt       DateTime      @default(now())
+
+  @@map("shipping_costs")
+  @@schema("tenant")
+}
+
+model GoodsReceipt {
+  id              String        @id @default(cuid())
+  purchaseOrderId String
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id])
+  receivedBy      String
+  receivedAt      DateTime      @default(now())
+  notes           String?
+  photos          String[]
+
+  items GoodsReceiptItem[]
+
+  @@map("goods_receipts")
+  @@schema("tenant")
+}
+
+model GoodsReceiptItem {
+  id                  String            @id @default(cuid())
+  goodsReceiptId      String
+  goodsReceipt        GoodsReceipt      @relation(fields: [goodsReceiptId], references: [id])
+  purchaseOrderItemId String
+  purchaseOrderItem   PurchaseOrderItem @relation(fields: [purchaseOrderItemId], references: [id])
+  productId           String
+  product             Product           @relation(fields: [productId], references: [id])
+  quantityReceived    Decimal           @db.Decimal(10, 3)
+
+  @@map("goods_receipt_items")
+  @@schema("tenant")
+}
+
+model PurchaseInvoice {
+  id              String                 @id @default(cuid())
+  purchaseOrderId String
+  purchaseOrder   PurchaseOrder          @relation(fields: [purchaseOrderId], references: [id])
+  vendorInvoiceNo String?
+  amount          Decimal                @db.Decimal(15, 2)
+  fundSourceId    String
+  fundSource      FundSource             @relation(fields: [fundSourceId], references: [id])
+  status          PurchaseInvoiceStatus  @default(unpaid)
+  dueDate         DateTime
+  createdAt       DateTime               @default(now())
+
+  @@map("purchase_invoices")
+  @@schema("tenant")
+}
+
+enum PurchaseInvoiceStatus {
+  unpaid
+  paid
+
+  @@schema("tenant")
+}
+
+model Expense {
+  id            String        @id @default(cuid())
+  category      String
+  amount        Decimal       @db.Decimal(15, 2)
+  description   String
+  attachmentUrl String?
+  fundSourceId  String
+  fundSource    FundSource    @relation(fields: [fundSourceId], references: [id])
+  submittedBy   String
+  status        ExpenseStatus @default(draft)
+  createdAt     DateTime      @default(now())
+
+  @@map("expenses")
+  @@schema("tenant")
+}
+
+enum ExpenseStatus {
+  draft
+  approved
+  rejected
+
+  @@schema("tenant")
+}
+
+// ─── Inventory ────────────────────────────────────────────────────────────────
+
+model Product {
+  id           String      @id @default(cuid())
+  name         String
+  sku          String      @unique
+  description  String?
+  type         ProductType
+  unitPrice    Decimal     @db.Decimal(15, 2)
+  costPrice    Decimal     @default(0) @db.Decimal(15, 2)
+  stock        Int         @default(0)
+  reorderLevel Int         @default(0)
+  categoryId   String?
+  category     Category?   @relation(fields: [categoryId], references: [id])
+  isActive     Boolean     @default(true)
+  createdAt    DateTime    @default(now())
+
+  purchaseOrderItems  PurchaseOrderItem[]
+  goodsReceiptItems   GoodsReceiptItem[]
+  purchaseHistory     ProductPurchaseHistory[]
+  stockMovements      StockMovement[]
+  warehouseStock      WarehouseStock[]
+  posSaleItems        POSSaleItem[]
+
+  @@map("products")
+  @@schema("tenant")
+}
+
+enum ProductType {
+  physical
+  service
+
+  @@schema("tenant")
+}
+
+model Category {
+  id       String     @id @default(cuid())
+  name     String
+  parentId String?
+  parent   Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryTree")
+  products Product[]
+
+  @@map("categories")
+  @@schema("tenant")
+}
+
+model ProductPurchaseHistory {
+  id               String            @id @default(cuid())
+  productId        String
+  product          Product           @relation(fields: [productId], references: [id])
+  purchaseOrderId  String
+  vendorId         String
+  vendor           Vendor            @relation(fields: [vendorId], references: [id])
+  vendorName       String
+  vendorType       VendorType
+  platform         EcommercePlatform?
+  quantityReceived Decimal           @db.Decimal(10, 3)
+  unitCost         Decimal           @db.Decimal(15, 2)
+  shippingCostShare Decimal          @default(0) @db.Decimal(15, 2)
+  landedUnitCost   Decimal           @db.Decimal(15, 2)
+  receivedAt       DateTime
+
+  @@map("product_purchase_history")
+  @@schema("tenant")
+}
+
+model StockMovement {
+  id            String            @id @default(cuid())
+  productId     String
+  product       Product           @relation(fields: [productId], references: [id])
+  type          StockMovementType
+  quantity      Int
+  referenceType String
+  referenceId   String
+  notes         String?
+  createdAt     DateTime          @default(now())
+
+  @@map("stock_movements")
+  @@schema("tenant")
+}
+
+enum StockMovementType {
+  in
+  out
+  adjustment
+  transfer
+
+  @@schema("tenant")
+}
+
+model Warehouse {
+  id        String           @id @default(cuid())
+  name      String
+  location  String?
+  isDefault Boolean          @default(false)
+  stock     WarehouseStock[]
+
+  @@map("warehouses")
+  @@schema("tenant")
+}
+
+model WarehouseStock {
+  id          String    @id @default(cuid())
+  warehouseId String
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id])
+  productId   String
+  product     Product   @relation(fields: [productId], references: [id])
+  quantity    Int       @default(0)
+
+  @@unique([warehouseId, productId])
+  @@map("warehouse_stock")
+  @@schema("tenant")
+}
+
+// ─── Projects ─────────────────────────────────────────────────────────────────
+
+model Project {
+  id          String        @id @default(cuid())
+  customerId  String
+  customer    Customer      @relation(fields: [customerId], references: [id])
+  name        String
+  description String?
+  budget      Decimal       @db.Decimal(15, 2)
+  startDate   DateTime
+  endDate     DateTime?
+  status      ProjectStatus @default(draft)
+  managerId   String
+  manager     User          @relation("ProjectManager", fields: [managerId], references: [id])
+  createdAt   DateTime      @default(now())
+
+  milestones        Milestone[]
+  timeLogs          TimeLog[]
+  tasks             Task[]
+  expenses          ProjectExpense[]
+  invoices          Invoice[]
+  attendanceRecords AttendanceRecord[]
+  cashAdvances      CashAdvance[]
+  tickets           Ticket[]
+  budgetAllocations BudgetAllocation[]
+
+  @@map("projects")
+  @@schema("tenant")
+}
+
+enum ProjectStatus {
+  draft
+  active
+  on_hold
+  completed
+  cancelled
+
+  @@schema("tenant")
+}
+
+model ProjectExpense {
+  id                  String        @id @default(cuid())
+  projectId           String
+  project             Project       @relation(fields: [projectId], references: [id])
+  budgetAllocationId  String?
+  budgetAllocation    BudgetAllocation? @relation(fields: [budgetAllocationId], references: [id])
+  cashAdvanceId       String?
+  cashAdvance         CashAdvance?  @relation(fields: [cashAdvanceId], references: [id])
+  category            String
+  amount              Decimal       @db.Decimal(15, 2)
+  description         String
+  receiptUrl          String?
+  fundSourceId        String
+  fundSource          FundSource    @relation(fields: [fundSourceId], references: [id])
+  loggedBy            String
+  status              ExpenseStatus @default(draft)
+  createdAt           DateTime      @default(now())
+
+  @@map("project_expenses")
+  @@schema("tenant")
+}
+
+model Milestone {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id])
+  title       String
+  dueDate     DateTime
+  isCompleted Boolean  @default(false)
+
+  @@map("milestones")
+  @@schema("tenant")
+}
+
+model TimeLog {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id])
+  taskId      String?
+  task        Task?    @relation(fields: [taskId], references: [id])
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  hours       Decimal  @db.Decimal(5, 2)
+  description String?
+  loggedAt    DateTime @default(now())
+
+  @@map("time_logs")
+  @@schema("tenant")
+}
+
+// ─── Tasks ────────────────────────────────────────────────────────────────────
+
+model Task {
+  id          String     @id @default(cuid())
+  title       String
+  description String?
+  projectId   String?
+  project     Project?   @relation(fields: [projectId], references: [id])
+  assignedTo  String
+  assignee    User       @relation("TaskAssignee", fields: [assignedTo], references: [id])
+  assignedBy  String
+  assigner    User       @relation("TaskAssigner", fields: [assignedBy], references: [id])
+  priority    TaskPriority @default(medium)
+  status      TaskStatus  @default(todo)
+  dueDate     DateTime?
+  createdAt   DateTime   @default(now())
+
+  timeLogs TimeLog[]
+
+  @@map("tasks")
+  @@schema("tenant")
+}
+
+enum TaskPriority {
+  low
+  medium
+  high
+
+  @@schema("tenant")
+}
+
+enum TaskStatus {
+  todo
+  in_progress
+  done
+  cancelled
+
+  @@schema("tenant")
+}
+
+model ToDo {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  title       String
+  isCompleted Boolean  @default(false)
+  dueDate     DateTime?
+  createdAt   DateTime @default(now())
+
+  @@map("todos")
+  @@schema("tenant")
+}
+
+// ─── DTR / Attendance ─────────────────────────────────────────────────────────
+
+model AttendanceRecord {
+  id                  String                @id @default(cuid())
+  userId              String
+  user                User                  @relation(fields: [userId], references: [id])
+  date                DateTime              @db.Date
+  clockInTime         DateTime
+  clockInLat          Decimal?              @db.Decimal(10, 7)
+  clockInLng          Decimal?              @db.Decimal(10, 7)
+  clockInLocation     ClockInLocation
+  clockOutTime        DateTime?
+  clockOutLat         Decimal?              @db.Decimal(10, 7)
+  clockOutLng         Decimal?              @db.Decimal(10, 7)
+  workLocation        String?
+  projectId           String?
+  project             Project?              @relation(fields: [projectId], references: [id])
+  status              AttendanceRecordStatus @default(pending)
+  approvedBy          String?
+  approvedAt          DateTime?
+  notes               String?
+  isSyncedFromOffline Boolean               @default(false)
+  createdAt           DateTime              @default(now())
+
+  attendance Attendance?
+
+  @@map("attendance_records")
+  @@schema("tenant")
+}
+
+enum ClockInLocation {
+  office
+  project_site
+
+  @@schema("tenant")
+}
+
+enum AttendanceRecordStatus {
+  pending
+  approved
+  rejected
+
+  @@schema("tenant")
+}
+
+model Attendance {
+  id                  String             @id @default(cuid())
+  employeeId          String
+  employee            Employee           @relation(fields: [employeeId], references: [id])
+  attendanceRecordId  String             @unique
+  attendanceRecord    AttendanceRecord   @relation(fields: [attendanceRecordId], references: [id])
+  date                DateTime           @db.Date
+  hoursWorked         Decimal            @db.Decimal(5, 2)
+  status              AttendanceStatus
+
+  @@map("attendances")
+  @@schema("tenant")
+}
+
+enum AttendanceStatus {
+  present
+  absent
+  late
+  half_day
+
+  @@schema("tenant")
+}
+
+// ─── Budget ───────────────────────────────────────────────────────────────────
+
+model BudgetAllocation {
+  id               String                  @id @default(cuid())
+  allocatedTo      String
+  allocatedToUser  User                    @relation("BudgetAllocatedTo", fields: [allocatedTo], references: [id])
+  allocatedBy      String
+  allocatedByUser  User                    @relation("BudgetAllocatedBy", fields: [allocatedBy], references: [id])
+  amount           Decimal                 @db.Decimal(15, 2)
+  remainingBalance Decimal                 @db.Decimal(15, 2)
+  projectId        String?
+  project          Project?                @relation(fields: [projectId], references: [id])
+  generalCategory  String?
+  fundSourceId     String
+  fundSource       FundSource              @relation(fields: [fundSourceId], references: [id])
+  notes            String?
+  status           BudgetAllocationStatus  @default(active)
+  createdAt        DateTime                @default(now())
+
+  projectExpenses ProjectExpense[]
+
+  @@map("budget_allocations")
+  @@schema("tenant")
+}
+
+enum BudgetAllocationStatus {
+  active
+  exhausted
+  revoked
+
+  @@schema("tenant")
+}
+
+// ─── Banking & Finance ────────────────────────────────────────────────────────
+
+model FundSource {
+  id                 String         @id @default(cuid())
+  type               FundSourceType
+  name               String
+  institutionName    String?
+  accountNumber      String?
+  currentBalance     Decimal        @default(0) @db.Decimal(15, 2)
+  creditLimit        Decimal?       @db.Decimal(15, 2)
+  outstandingBalance Decimal?       @default(0) @db.Decimal(15, 2)
+  isActive           Boolean        @default(true)
+  createdAt          DateTime       @default(now())
+
+  transactions      FundTransaction[]
+  invoices          Invoice[]
+  payments          Payment[]
+  purchaseOrders    PurchaseOrder[]
+  purchaseInvoices  PurchaseInvoice[]
+  expenses          Expense[]
+  projectExpenses   ProjectExpense[]
+  budgetAllocations BudgetAllocation[]
+  cashAdvances      CashAdvance[]
+  payslips          Payslip[]
+  posSessions       POSSession[]
+  posSales          POSSale[]
+  creditCardPaymentsFrom CreditCardPayment[] @relation("PaidFrom")
+  creditCardPaymentsTo   CreditCardPayment[] @relation("CreditCard")
+
+  @@map("fund_sources")
+  @@schema("tenant")
+}
+
+enum FundSourceType {
+  cash_on_hand
+  e_wallet
+  bank
+  credit_card
+
+  @@schema("tenant")
+}
+
+model FundTransaction {
+  id            String              @id @default(cuid())
+  fundSourceId  String
+  fundSource    FundSource          @relation(fields: [fundSourceId], references: [id])
+  type          FundTransactionType
+  amount        Decimal             @db.Decimal(15, 2)
+  referenceType String
+  referenceId   String
+  description   String
+  balanceAfter  Decimal             @db.Decimal(15, 2)
+  createdBy     String
+  createdAt     DateTime            @default(now())
+
+  @@map("fund_transactions")
+  @@schema("tenant")
+}
+
+enum FundTransactionType {
+  credit
+  debit
+
+  @@schema("tenant")
+}
+
+model CreditCardPayment {
+  id                       String                  @id @default(cuid())
+  creditCardFundSourceId   String
+  creditCard               FundSource              @relation("CreditCard", fields: [creditCardFundSourceId], references: [id])
+  paidFromFundSourceId     String
+  paidFrom                 FundSource              @relation("PaidFrom", fields: [paidFromFundSourceId], references: [id])
+  amount                   Decimal                 @db.Decimal(15, 2)
+  paymentType              CreditCardPaymentType
+  coveredTransactionIds    String[]
+  statementPeriodStart     DateTime?
+  statementPeriodEnd       DateTime?
+  notes                    String?
+  createdBy                String
+  createdAt                DateTime                @default(now())
+
+  @@map("credit_card_payments")
+  @@schema("tenant")
+}
+
+enum CreditCardPaymentType {
+  per_transaction
+  bulk_statement
+  partial
+
+  @@schema("tenant")
+}
+
+// ─── HR & Payroll ─────────────────────────────────────────────────────────────
+
+model Employee {
+  id             String         @id @default(cuid())
+  userId         String         @unique
+  user           User           @relation(fields: [userId], references: [id])
+  employeeNo     String         @unique
+  position       String
+  department     String
+  employmentType EmploymentType
+  hireDate       DateTime
+  salary         Decimal        @db.Decimal(15, 2)
+  isActive       Boolean        @default(true)
+
+  attendances    Attendance[]
+  leaveRequests  LeaveRequest[]
+  cashAdvances   CashAdvance[]
+  payslips       Payslip[]
+
+  @@map("employees")
+  @@schema("tenant")
+}
+
+enum EmploymentType {
+  full_time
+  part_time
+  contractual
+
+  @@schema("tenant")
+}
+
+model LeaveRequest {
+  id         String             @id @default(cuid())
+  employeeId String
+  employee   Employee           @relation(fields: [employeeId], references: [id])
+  type       LeaveRequestType
+  startDate  DateTime
+  endDate    DateTime
+  status     LeaveRequestStatus @default(pending)
+  approvedBy String?
+
+  @@map("leave_requests")
+  @@schema("tenant")
+}
+
+enum LeaveRequestType {
+  vacation
+  sick
+  emergency
+
+  @@schema("tenant")
+}
+
+enum LeaveRequestStatus {
+  pending
+  approved
+  rejected
+
+  @@schema("tenant")
+}
+
+model CashAdvance {
+  id             String            @id @default(cuid())
+  employeeId     String
+  employee       Employee          @relation(fields: [employeeId], references: [id])
+  amount         Decimal           @db.Decimal(15, 2)
+  fundSourceId   String
+  fundSource     FundSource        @relation(fields: [fundSourceId], references: [id])
+  isProjectLinked Boolean          @default(false)
+  projectId      String?
+  project        Project?          @relation(fields: [projectId], references: [id])
+  purpose        String
+  status         CashAdvanceStatus @default(pending)
+  approvedBy     String?
+  releasedAt     DateTime?
+  createdAt      DateTime          @default(now())
+
+  recoveries     CashAdvanceRecovery[]
+  projectExpenses ProjectExpense[]
+
+  @@map("cash_advances")
+  @@schema("tenant")
+}
+
+enum CashAdvanceStatus {
+  pending
+  approved
+  released
+  partially_recovered
+  fully_recovered
+
+  @@schema("tenant")
+}
+
+model CashAdvanceRecovery {
+  id              String      @id @default(cuid())
+  cashAdvanceId   String
+  cashAdvance     CashAdvance @relation(fields: [cashAdvanceId], references: [id])
+  payrollId       String
+  payroll         Payroll     @relation(fields: [payrollId], references: [id])
+  amountDeducted  Decimal     @db.Decimal(15, 2)
+  remainingBalance Decimal    @db.Decimal(15, 2)
+  createdAt       DateTime    @default(now())
+
+  @@map("cash_advance_recoveries")
+  @@schema("tenant")
+}
+
+model Payroll {
+  id          String         @id @default(cuid())
+  periodStart DateTime
+  periodEnd   DateTime
+  status      PayrollStatus  @default(draft)
+
+  payslips   Payslip[]
+  recoveries CashAdvanceRecovery[]
+
+  @@map("payrolls")
+  @@schema("tenant")
+}
+
+enum PayrollStatus {
+  draft
+  approved
+  released
+
+  @@schema("tenant")
+}
+
+model Payslip {
+  id                   String      @id @default(cuid())
+  payrollId            String
+  payroll              Payroll     @relation(fields: [payrollId], references: [id])
+  employeeId           String
+  employee             Employee    @relation(fields: [employeeId], references: [id])
+  basicPay             Decimal     @db.Decimal(15, 2)
+  deductions           Json        // Deduction[]
+  additions            Json        // Addition[]
+  cashAdvanceDeductions Json       // { cashAdvanceRecoveryId: string, amount: Decimal }[]
+  netPay               Decimal     @db.Decimal(15, 2)
+  fundSourceId         String
+  fundSource           FundSource  @relation(fields: [fundSourceId], references: [id])
+
+  @@map("payslips")
+  @@schema("tenant")
+}
+
+// ─── POS ──────────────────────────────────────────────────────────────────────
+
+model POSSession {
+  id           String           @id @default(cuid())
+  cashierId    String
+  cashier      User             @relation(fields: [cashierId], references: [id])
+  openedAt     DateTime         @default(now())
+  closedAt     DateTime?
+  openingCash  Decimal          @db.Decimal(15, 2)
+  closingCash  Decimal?         @db.Decimal(15, 2)
+  fundSourceId String
+  fundSource   FundSource       @relation(fields: [fundSourceId], references: [id])
+  status       POSSessionStatus @default(open)
+
+  sales POSSale[]
+
+  @@map("pos_sessions")
+  @@schema("tenant")
+}
+
+enum POSSessionStatus {
+  open
+  closed
+
+  @@schema("tenant")
+}
+
+model POSSale {
+  id            String        @id @default(cuid())
+  sessionId     String
+  session       POSSession    @relation(fields: [sessionId], references: [id])
+  customerId    String?
+  customer      Customer?     @relation(fields: [customerId], references: [id])
+  subtotal      Decimal       @db.Decimal(15, 2)
+  discount      Decimal       @default(0) @db.Decimal(15, 2)
+  tax           Decimal       @default(0) @db.Decimal(15, 2)
+  total         Decimal       @db.Decimal(15, 2)
+  paymentMethod PaymentMethod
+  fundSourceId  String
+  fundSource    FundSource    @relation(fields: [fundSourceId], references: [id])
+  receiptNo     String        @unique
+  createdAt     DateTime      @default(now())
+
+  items POSSaleItem[]
+
+  @@map("pos_sales")
+  @@schema("tenant")
+}
+
+model POSSaleItem {
+  id        String    @id @default(cuid())
+  saleId    String
+  sale      POSSale   @relation(fields: [saleId], references: [id])
+  productId String
+  product   Product   @relation(fields: [productId], references: [id])
+  quantity  Int
+  unitPrice Decimal   @db.Decimal(15, 2)
+  lineTotal Decimal   @db.Decimal(15, 2)
+
+  @@map("pos_sale_items")
+  @@schema("tenant")
+}
+
+// ─── Accounting ───────────────────────────────────────────────────────────────
+
+model Account {
+  id      String      @id @default(cuid())
+  code    String      @unique
+  name    String
+  type    AccountType
+  balance Decimal     @default(0) @db.Decimal(15, 2)
+
+  journalLines JournalLine[]
+
+  @@map("accounts")
+  @@schema("tenant")
+}
+
+enum AccountType {
+  asset
+  liability
+  equity
+  income
+  expense
+
+  @@schema("tenant")
+}
+
+model JournalEntry {
+  id            String    @id @default(cuid())
+  referenceType String
+  referenceId   String
+  date          DateTime
+  description   String
+  createdBy     String
+  invoiceId     String?
+  invoice       Invoice?  @relation(fields: [invoiceId], references: [id])
+
+  lines JournalLine[]
+
+  @@map("journal_entries")
+  @@schema("tenant")
+}
+
+model JournalLine {
+  id             String       @id @default(cuid())
+  journalEntryId String
+  journalEntry   JournalEntry @relation(fields: [journalEntryId], references: [id])
+  accountId      String
+  account        Account      @relation(fields: [accountId], references: [id])
+  debit          Decimal      @default(0) @db.Decimal(15, 2)
+  credit         Decimal      @default(0) @db.Decimal(15, 2)
+
+  @@map("journal_lines")
+  @@schema("tenant")
+}
+
+model TaxRate {
+  id         String  @id @default(cuid())
+  name       String
+  percentage Decimal @db.Decimal(5, 2)
+  isDefault  Boolean @default(false)
+
+  @@map("tax_rates")
+  @@schema("tenant")
+}
+
+model FiscalYear {
+  id        String   @id @default(cuid())
+  name      String
+  startDate DateTime
+  endDate   DateTime
+  isClosed  Boolean  @default(false)
+
+  @@map("fiscal_years")
+  @@schema("tenant")
+}
+
+// ─── Support ──────────────────────────────────────────────────────────────────
+
+model Ticket {
+  id          String         @id @default(cuid())
+  customerId  String
+  customer    Customer       @relation(fields: [customerId], references: [id])
+  projectId   String?
+  project     Project?       @relation(fields: [projectId], references: [id])
+  subject     String
+  description String
+  priority    TicketPriority @default(medium)
+  status      TicketStatus   @default(open)
+  assignedTo  String?
+  assignedUser User?          @relation(fields: [assignedTo], references: [id])
+  createdAt   DateTime       @default(now())
+
+  comments    TicketComment[]
+  attachments TicketAttachment[]
+
+  @@map("tickets")
+  @@schema("tenant")
+}
+
+enum TicketPriority {
+  low
+  medium
+  high
+  critical
+
+  @@schema("tenant")
+}
+
+enum TicketStatus {
+  open
+  in_progress
+  resolved
+  closed
+
+  @@schema("tenant")
+}
+
+model TicketComment {
+  id         String   @id @default(cuid())
+  ticketId   String
+  ticket     Ticket   @relation(fields: [ticketId], references: [id])
+  authorId   String
+  message    String
+  isInternal Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  @@map("ticket_comments")
+  @@schema("tenant")
+}
+
+model TicketAttachment {
+  id         String   @id @default(cuid())
+  ticketId   String
+  ticket     Ticket   @relation(fields: [ticketId], references: [id])
+  fileUrl    String
+  uploadedAt DateTime @default(now())
+
+  @@map("ticket_attachments")
+  @@schema("tenant")
+}

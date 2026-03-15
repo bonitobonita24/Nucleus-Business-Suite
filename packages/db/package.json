@@ -1,0 +1,36 @@
+{
+  "name": "@nucleus/db",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Prisma schema, migrations, typed repositories, seed. Handles search_path switching middleware.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "migrate": "prisma migrate deploy",
+    "migrate:dev": "prisma migrate dev",
+    "migrate:data": "tsx src/migrations/data-migrations.ts",
+    "seed": "tsx src/seed.ts",
+    "studio": "prisma studio",
+    "generate": "prisma generate"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.17.0",
+    "@nucleus/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "prisma": "^5.17.0",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.4"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "name": "@nucleus/worker",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "BullMQ worker process — handles all 17 job queues",
+  "main": "./dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "bullmq": "^5.8.0",
+    "@nucleus/shared": "workspace:*",
+    "@nucleus/db": "workspace:*",
+    "@nucleus/jobs": "workspace:*",
+    "@nucleus/storage": "workspace:*",
+    "bcryptjs": "^2.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/bcryptjs": "^2.4.6",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.4"
+  }
+}
