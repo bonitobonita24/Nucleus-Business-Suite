@@ -1,0 +1,100 @@
+# CLINE RULES — Spec-Driven Platform V10
+# Cline reads this before every task.
+
+## CONTEXT LOAD ORDER
+# Always read these 9 docs in this exact order before any action:
+# 1. .cline/memory/lessons.md        ← READ FIRST — avoid repeating past errors
+# 2. docs/PRODUCT.md
+# 3. inputs.yml
+# 4. inputs.schema.json
+# 5. docs/CHANGELOG_AI.md
+# 6. docs/DECISIONS_LOG.md
+# 7. docs/IMPLEMENTATION_MAP.md
+# 8. project.memory.md
+# 9. .cline/memory/agent-log.md
+
+## EXECUTION RULES
+
+### Phase 4 — Full Monorepo Scaffold
+- Run ALL 8 parts sequentially without stopping
+- No "next" prompts — no manual steps required
+- After Part 8: automatically run Phase 5 validation
+- Derive everything from inputs.yml — never hardcode
+
+### Phase 5 — Validation
+- Run all 8 commands; fix every failure before proceeding
+- Never suppress TypeScript errors with `any` — fix at source
+- All 8 must be green before Phase 6
+
+### Phase 6 — Docker Services
+- Start docker-compose.db.yml FIRST (creates shared network)
+- Read logs after each service starts
+- Fix errors automatically (3 attempts per service)
+- After services healthy: run Visual QA per Rule 16
+- Write handoff file if 3 attempts fail
+
+### Phase 7 — Feature Update
+- Read all 9 context docs + lessons.md
+- Run codebase_search (Rule 17) BEFORE opening any files
+- Surgical edits only — never full rewrites
+- Never touch .devcontainer
+- Run Visual QA after every feature update (Rule 16)
+- Run codebase_update after every implementation (Rule 17)
+- Update all 9 governance docs with agent attribution
+
+## SOCRATICODE RULE 17 — SEARCH BEFORE READING
+# MANDATORY: use codebase_search BEFORE opening any file
+#
+# Workflow:
+#   1. codebase_search { query: "conceptual description" }
+#      → returns ranked snippets from entire codebase in milliseconds
+#   2. codebase_graph_query { filePath: "src/..." }
+#      → see imports + dependents BEFORE reading a file
+#   3. Read files ONLY after search points to 1-3 specific files
+#   4. For exact symbol/string lookups: grep is still faster
+#
+# When to use each tool:
+#   codebase_search         → "how is auth handled", "where is rate limiting"
+#   codebase_graph_query    → see imports + dependents before diving in
+#   codebase_graph_circular → when debugging unexpected behavior
+#   codebase_context_search → find DB schemas, API specs, infra configs
+#   codebase_status         → check index is up to date
+#
+# After every Feature Update: run codebase_update to keep index live
+
+## ERROR RECOVERY RULES
+# 1. On any error: attempt auto-fix (3 max attempts)
+# 2. After each attempt: log to .cline/memory/lessons.md
+# 3. If still failing after 3 attempts: write handoff file in .cline/handoffs/
+# 4. Handoff filename: <YYYY-MM-DD-HH-MM>-<error-type>.md
+
+## HANDOFF FORMAT
+# .cline/handoffs/<timestamp>-<error-type>.md must contain:
+#   - What Cline was doing when it got stuck
+#   - Full error output
+#   - All 3 fix attempts with results
+#   - Root cause analysis
+#   - Recommended next steps for human or fallback agent
+
+## GOVERNANCE RULES
+# - PRODUCT.md is the ONLY file a human ever edits
+# - inputs.yml and inputs.schema.json are agent-owned — never human-edited
+# - Every CHANGELOG_AI.md entry must include Agent: CLINE|CLAUDE_CODE|COPILOT|HUMAN
+# - Rule 9 bidirectional governance: REFUSE if PRODUCT.md and inputs.yml are out of sync
+# - Rule 11: feature removals require file deletion + down-migration + user confirmation
+# - .devcontainer is FROZEN after Phase 3 — never touch it again
+# - TypeScript strict everywhere — no any types — no .js files in src/
+
+## VISUAL QA CHECKS (Rule 16)
+# Minimum checks every time:
+#   - App loads without 5xx errors
+#   - Login page renders and is interactive
+#   - No console errors on main landing page
+#   - Auth flow: login → redirect to dashboard completes
+#   - Health endpoint: GET /api/health returns 200
+# Extended checks after Phase 7 feature updates:
+#   - Every page touched by the update loads correctly
+#   - No new console errors introduced
+#   - Any new form renders and accepts input
+#   - New API endpoints return expected responses
+# On failure: log to lessons.md, attempt one auto-fix, retry, write handoff if still failing

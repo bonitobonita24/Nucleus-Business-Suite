@@ -1,0 +1,30 @@
+{
+  "name": "nucleus-business-suite",
+  "version": "0.0.1",
+  "private": true,
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=9"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "clean": "turbo run clean",
+    "db:migrate": "pnpm --filter @nucleus/db migrate",
+    "db:migrate:data": "pnpm --filter @nucleus/db migrate:data",
+    "db:seed": "pnpm --filter @nucleus/db seed",
+    "db:studio": "pnpm --filter @nucleus/db studio",
+    "tools:validate-inputs": "node tools/validate-inputs.mjs",
+    "tools:check-env": "node tools/check-env.mjs",
+    "tools:check-product-sync": "node tools/check-product-sync.mjs",
+    "tools:hydration-lint": "node tools/hydration-lint.mjs"
+  },
+  "devDependencies": {
+    "turbo": "^2.1.3",
+    "typescript": "^5.5.4"
+  }
+}
